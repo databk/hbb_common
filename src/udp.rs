@@ -4,7 +4,7 @@ use bytes::{Bytes, BytesMut};
 use futures::{SinkExt, StreamExt};
 use protobuf::Message;
 use socket2::{Domain, Socket, Type};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use tokio::net::{lookup_host, ToSocketAddrs, UdpSocket};
 use tokio_socks::{udp::Socks5UdpFramed, IntoTargetAddr, TargetAddr, ToProxyAddrs};
 use tokio_util::{codec::BytesCodec, udp::UdpFramed};
@@ -43,6 +43,28 @@ fn new_socket(addr: SocketAddr, reuse: bool, buf_size: usize) -> Result<Socket, 
     }
     socket.bind(&addr.into())?;
     Ok(socket)
+}
+
+/// Normalize `addr` to match the address family actually bound on `local`.
+/// Sending a bare `SocketAddr::V4` on a real `AF_INET6` (dual-stack) socket
+/// fails with EINVAL on Linux; the destination must be an IPv4-mapped IPv6
+/// address instead. Conversely, if the local socket is plain IPv4, an
+/// IPv4-mapped IPv6 destination is converted back down to IPv4.
+fn normalize_addr_family(local: Option<SocketAddr>, addr: SocketAddr) -> SocketAddr {
+    let local_is_v6 = matches!(local, Some(SocketAddr::V6(_)));
+    match addr {
+        SocketAddr::V4(v4) if local_is_v6 => {
+            SocketAddr::new(IpAddr::V6(v4.ip().to_ipv6_mapped()), v4.port())
+        }
+        SocketAddr::V6(v6) if !local_is_v6 => {
+            if let Some(v4) = v6.ip().to_ipv4() {
+                SocketAddr::new(IpAddr::V4(v4), v6.port())
+            } else {
+                addr
+            }
+        }
+        _ => addr,
+    }
 }
 
 impl FramedSocket {
@@ -100,7 +122,14 @@ impl FramedSocket {
         match self {
             Self::Direct(f) => {
                 if let TargetAddr::Ip(addr) = addr {
-                    f.send((send_data, addr)).await?
+                    let local = f.get_ref().local_addr().ok();
+                    let normalized = normalize_addr_family(local, addr);
+                    f.send((send_data, normalized)).await.with_context(|| {
+                        format!(
+                            "udp send failed: local={:?} target={} normalized={}",
+                            local, addr, normalized
+                        )
+                    })?
                 }
             }
             Self::ProxySocks(f) => f.send((send_data, addr)).await?,
@@ -120,7 +149,14 @@ impl FramedSocket {
         match self {
             Self::Direct(f) => {
                 if let TargetAddr::Ip(addr) = addr {
-                    f.send((Bytes::from(msg), addr)).await?
+                    let local = f.get_ref().local_addr().ok();
+                    let normalized = normalize_addr_family(local, addr);
+                    f.send((Bytes::from(msg), normalized)).await.with_context(|| {
+                        format!(
+                            "udp send_raw failed: local={:?} target={} normalized={}",
+                            local, addr, normalized
+                        )
+                    })?
                 }
             }
             Self::ProxySocks(f) => f.send((Bytes::from(msg), addr)).await?,
