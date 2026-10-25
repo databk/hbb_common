@@ -5,6 +5,7 @@ use config::Config;
 pub use futures;
 pub use protobuf;
 pub use protos::rendezvous as rendezvous_proto;
+pub use protos::relay_control as relay_control_proto;
 use serde_derive::{Deserialize, Serialize};
 use std::{
     fs::File,

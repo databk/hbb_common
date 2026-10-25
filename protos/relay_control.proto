@@ -1,0 +1,144 @@
+syntax = "proto3";
+package hbb;
+
+// hbbr <-> hbbs reverse control channel. Carried as binary protobuf frames
+// over the /v1/control WebSocket. A single ControlMessage envelope with a
+// oneof payload replaces the former JSON "type" discriminator.
+
+message RelayIdentity {
+  string id = 1;
+  string version = 2;
+  // Client-routable address; empty means not advertised.
+  string address = 3;
+}
+
+message HostStats {
+  // 0-100; negative means unavailable (non-Linux hosts).
+  float cpu_usage = 1;
+  float mem_usage = 2;
+  uint64 active_sessions = 3;
+  uint64 bytes_per_second = 4;
+  // 0 means no configured limit.
+  uint64 max_sessions = 5;
+}
+
+message SessionInfo {
+  string uuid = 1;
+  string target_id = 2;
+  string peer_target_id = 3;
+  repeated string endpoints = 4;
+  // "tcp" | "websocket"
+  string transport = 5;
+  int64 started_at = 6;
+  uint64 bytes = 7;
+  uint64 bytes_per_second = 8;
+  bool closing = 9;
+}
+
+message Bans {
+  repeated string device_ids = 1;
+  repeated string ips = 2;
+}
+
+message SessionEvent {
+  enum Kind {
+    SESSION_OPENED = 0;
+    SESSION_CLOSED = 1;
+  }
+  // Monotonic sequence assigned by the relay; 0 means unsequenced (legacy).
+  uint64 seq = 1;
+  Kind kind = 2;
+  string uuid = 3;
+  // Only present for SESSION_OPENED.
+  SessionInfo session = 4;
+}
+
+// ---- hbbr -> hbbs ----
+
+message Register {
+  RelayIdentity relay = 1;
+  uint64 last_event_seq = 2;
+}
+
+message Heartbeat {
+  uint64 uptime_seconds = 1;
+  HostStats stats = 2;
+}
+
+message SessionsSnapshot {
+  repeated SessionInfo sessions = 1;
+}
+
+// Response to a proxied hbbs -> hbbr request (get_config/set_config/get_logs/
+// restart). body carries the JSON payload so HTTP semantics pass through.
+// Named ControlResponse to avoid colliding with rendezvous.RelayResponse.
+message ControlResponse {
+  uint64 id = 1;
+  uint32 status = 2;
+  bytes body = 3;
+}
+
+message BanAck {
+  uint64 id = 1;
+}
+
+// ---- hbbs -> hbbr ----
+
+message BansUpdate {
+  uint64 id = 1;
+  Bans bans = 2;
+}
+
+message Disconnect {
+  // 0 = fire-and-forget (no ack expected).
+  uint64 id = 1;
+  string uuid = 2;
+}
+
+message GetSessions {
+  uint64 id = 1;
+}
+
+message GetConfig {
+  uint64 id = 1;
+}
+
+message SetConfig {
+  uint64 id = 1;
+  map<string, string> values = 2;
+}
+
+message GetLogs {
+  uint64 id = 1;
+  uint64 tail = 2;
+}
+
+message Restart {
+  // 0 = fire-and-forget (no ack expected).
+  uint64 id = 1;
+}
+
+message ReplayEvents {
+  uint64 from_seq = 1;
+}
+
+// ---- Top-level envelope ----
+
+message ControlMessage {
+  oneof payload {
+    Register register = 1;
+    Heartbeat heartbeat = 2;
+    SessionsSnapshot sessions = 3;
+    SessionEvent event = 4;
+    ControlResponse response = 5;
+    BanAck ban_ack = 6;
+    BansUpdate bans = 7;
+    Disconnect disconnect = 8;
+    GetSessions get_sessions = 9;
+    GetConfig get_config = 10;
+    SetConfig set_config = 11;
+    GetLogs get_logs = 12;
+    Restart restart = 13;
+    ReplayEvents replay_events = 14;
+  }
+}
